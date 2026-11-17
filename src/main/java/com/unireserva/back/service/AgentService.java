@@ -27,10 +27,10 @@ import com.unireserva.back.repository.AgentInteractionRepository;
 import com.unireserva.back.repository.UsersRepository;
 
 /**
- * Agente de IA de UniReserva. Implementa el ciclo clásico de un agente con herramientas:
+ * Agente de IA de UniReserva (Gemini). Ciclo clásico de un agente con herramientas:
  *   1. Envía la conversación + herramientas al modelo.
- *   2. Si el modelo pide usar una herramienta (stop_reason = tool_use), la ejecuta en el backend
- *      y le devuelve el resultado.
+ *   2. Si el modelo responde con functionCall, el backend ejecuta la herramienta y le devuelve
+ *      el resultado como functionResponse.
  *   3. Repite hasta que el modelo responde con texto final (o se alcanza el máximo de pasos).
  */
 @Service
@@ -41,19 +41,19 @@ public class AgentService {
     private static final DateTimeFormatter NOW_FORMAT =
             DateTimeFormatter.ofPattern("EEEE d 'de' MMMM 'de' yyyy, HH:mm", Locale.forLanguageTag("es-CO"));
 
-    private final AnthropicClient anthropicClient;
+    private final GeminiClient geminiClient;
     private final AgentToolbox toolbox;
     private final UsersRepository usersRepository;
     private final AgentInteractionRepository interactionRepository;
     private final Clock clock;
 
     public AgentService(
-            AnthropicClient anthropicClient,
+            GeminiClient geminiClient,
             AgentToolbox toolbox,
             UsersRepository usersRepository,
             AgentInteractionRepository interactionRepository,
             Clock clock) {
-        this.anthropicClient = anthropicClient;
+        this.geminiClient = geminiClient;
         this.toolbox = toolbox;
         this.usersRepository = usersRepository;
         this.interactionRepository = interactionRepository;
@@ -61,7 +61,7 @@ public class AgentService {
     }
 
     public AgentChatResponse chat(String userEmail, AgentChatRequest request) {
-        if (!anthropicClient.isConfigured()) {
+        if (!geminiClient.isConfigured()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                     "El asistente de IA no está configurado en este entorno.");
         }
@@ -69,7 +69,7 @@ public class AgentService {
         Users user = usersRepository.findByEmail(userEmail)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "La sesión ya no es válida"));
 
-        ArrayNode messages = buildMessages(request.messages());
+        ArrayNode contents = buildContents(request.messages());
         String lastUserMessage = lastUserMessage(request.messages());
         String system = systemPrompt(user);
         ArrayNode tools = toolbox.definitions();
@@ -79,43 +79,46 @@ public class AgentService {
         String reply = null;
 
         for (int step = 0; step < MAX_STEPS; step++) {
-            JsonNode response = anthropicClient.createMessage(system, messages, tools);
-            JsonNode content = response.path("content");
+            JsonNode response = geminiClient.generateContent(system, contents, tools);
+            JsonNode parts = response.path("candidates").path(0).path("content").path("parts");
 
-            // El turno del asistente (texto y/o tool_use) se agrega tal cual al historial.
-            ObjectNode assistantTurn = anthropicClient.mapper().createObjectNode();
-            assistantTurn.put("role", "assistant");
-            assistantTurn.set("content", content);
-            messages.add(assistantTurn);
+            List<JsonNode> functionCalls = new ArrayList<>();
+            for (JsonNode part : parts) {
+                if (part.has("functionCall")) {
+                    functionCalls.add(part);
+                }
+            }
 
-            if (!"tool_use".equals(response.path("stop_reason").asText())) {
-                reply = extractText(content);
+            if (functionCalls.isEmpty()) {
+                reply = extractText(parts);
                 break;
             }
 
-            ObjectNode toolResultsTurn = anthropicClient.mapper().createObjectNode();
-            toolResultsTurn.put("role", "user");
-            ArrayNode results = toolResultsTurn.putArray("content");
+            // El turno del modelo se reenvía TAL CUAL, incluida la "thoughtSignature" que Gemini
+            // exige recibir de vuelta cuando encadena llamadas a funciones.
+            ObjectNode modelTurn = geminiClient.mapper().createObjectNode();
+            modelTurn.put("role", "model");
+            modelTurn.set("parts", parts.deepCopy());
+            contents.add(modelTurn);
 
-            for (JsonNode block : content) {
-                if (!"tool_use".equals(block.path("type").asText())) {
-                    continue;
-                }
-                String toolName = block.path("name").asText();
+            ObjectNode toolResultsTurn = geminiClient.mapper().createObjectNode();
+            toolResultsTurn.put("role", "user");
+            ArrayNode resultParts = toolResultsTurn.putArray("parts");
+
+            for (JsonNode part : functionCalls) {
+                JsonNode call = part.get("functionCall");
+                String toolName = call.path("name").asText();
                 toolsUsed.add(toolName);
-                AgentToolbox.ToolResult result = toolbox.execute(toolName, block.path("input"), userEmail);
+
+                AgentToolbox.ToolResult result = toolbox.execute(toolName, call.path("args"), userEmail);
                 mutated |= result.mutatedReservations();
                 log.info("Agente [{}] herramienta={} error={}", user.getId(), toolName, result.error());
 
-                ObjectNode resultBlock = results.addObject();
-                resultBlock.put("type", "tool_result");
-                resultBlock.put("tool_use_id", block.path("id").asText());
-                resultBlock.put("content", result.content());
-                if (result.error()) {
-                    resultBlock.put("is_error", true);
-                }
+                ObjectNode functionResponse = resultParts.addObject().putObject("functionResponse");
+                functionResponse.put("name", toolName);
+                functionResponse.set("response", toResponseObject(result));
             }
-            messages.add(toolResultsTurn);
+            contents.add(toolResultsTurn);
         }
 
         if (reply == null || reply.isBlank()) {
@@ -133,6 +136,21 @@ public class AgentService {
     }
 
     // ------------------------------------------------------------------
+
+    /** Gemini exige que "response" sea un objeto JSON: {"result": ...} si salió bien, {"error": "..."} si falló. */
+    private ObjectNode toResponseObject(AgentToolbox.ToolResult result) {
+        ObjectNode wrapper = geminiClient.mapper().createObjectNode();
+        if (result.error()) {
+            wrapper.put("error", result.content());
+            return wrapper;
+        }
+        try {
+            wrapper.set("result", geminiClient.mapper().readTree(result.content()));
+        } catch (Exception exception) {
+            wrapper.put("result", result.content());
+        }
+        return wrapper;
+    }
 
     private String systemPrompt(Users user) {
         String now = LocalDateTime.now(clock).format(NOW_FORMAT);
@@ -167,8 +185,8 @@ public class AgentService {
                 """.formatted(now, user.getNames());
     }
 
-    /** Convierte el historial del front al formato del API. Recorta a los últimos mensajes y exige empezar con 'user'. */
-    private ArrayNode buildMessages(List<ChatMessage> history) {
+    /** Convierte el historial del front al formato Gemini (role "user" / "model"). Debe empezar y terminar con 'user'. */
+    private ArrayNode buildContents(List<ChatMessage> history) {
         List<ChatMessage> trimmed = history.size() > MAX_HISTORY
                 ? history.subList(history.size() - MAX_HISTORY, history.size())
                 : history;
@@ -181,11 +199,11 @@ public class AgentService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El último mensaje debe ser del usuario");
         }
 
-        ArrayNode array = anthropicClient.mapper().createArrayNode();
+        ArrayNode array = geminiClient.mapper().createArrayNode();
         for (ChatMessage message : trimmed.subList(firstUser, trimmed.size())) {
             ObjectNode node = array.addObject();
-            node.put("role", message.role());
-            node.put("content", message.content());
+            node.put("role", "user".equals(message.role()) ? "user" : "model");
+            node.putArray("parts").addObject().put("text", message.content());
         }
         return array;
     }
@@ -194,15 +212,17 @@ public class AgentService {
         return history.get(history.size() - 1).content();
     }
 
-    private static String extractText(JsonNode content) {
+    /** Une las partes de texto de la respuesta, omitiendo los "pensamientos" internos del modelo. */
+    private static String extractText(JsonNode parts) {
         StringBuilder text = new StringBuilder();
-        for (JsonNode block : content) {
-            if ("text".equals(block.path("type").asText())) {
-                if (!text.isEmpty()) {
-                    text.append("\n\n");
-                }
-                text.append(block.path("text").asText());
+        for (JsonNode part : parts) {
+            if (part.path("thought").asBoolean(false) || !part.has("text")) {
+                continue;
             }
+            if (!text.isEmpty()) {
+                text.append("\n\n");
+            }
+            text.append(part.path("text").asText());
         }
         return text.toString().trim();
     }

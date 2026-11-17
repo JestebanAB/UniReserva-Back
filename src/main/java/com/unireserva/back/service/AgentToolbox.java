@@ -35,50 +35,50 @@ public class AgentToolbox {
 
     private final ResourceService resourceService;
     private final ReservationService reservationService;
-    private final AnthropicClient anthropicClient;
+    private final GeminiClient geminiClient;
     private final Clock clock;
 
     public AgentToolbox(
             ResourceService resourceService,
             ReservationService reservationService,
-            AnthropicClient anthropicClient,
+            GeminiClient geminiClient,
             Clock clock) {
         this.resourceService = resourceService;
         this.reservationService = reservationService;
-        this.anthropicClient = anthropicClient;
+        this.geminiClient = geminiClient;
         this.clock = clock;
     }
 
     private ObjectMapper mapper() {
-        return anthropicClient.mapper();
+        return geminiClient.mapper();
     }
 
     // ------------------------------------------------------------------
     // Definición de las herramientas (JSON Schema que ve el modelo)
     // ------------------------------------------------------------------
     public ArrayNode definitions() {
-        ArrayNode tools = mapper().createArrayNode();
+        ArrayNode declarations = mapper().createArrayNode();
 
-        tools.add(tool("search_resources",
+        declarations.add(declaration("search_resources",
                 "Busca espacios y equipos reservables de la universidad (canchas, salas de estudio, auditorios, "
                         + "juegos de la ludoteca...). Úsala para encontrar el resource_id. Sin filtros devuelve todo el catálogo.",
-                schema(
+                List.of(
                         prop("query", "string", "Texto a buscar en nombre o descripción, por ejemplo 'tenis' o 'ajedrez'"),
                         prop("type", "string", "SPACE (espacio por horario) o EQUIPMENT (equipo por unidades)")),
                 List.of()));
 
-        tools.add(tool("get_availability",
+        declarations.add(declaration("get_availability",
                 "Devuelve las franjas libres y ocupadas de un recurso en un día. Úsala SIEMPRE antes de proponer "
                         + "un horario o de crear una reserva.",
-                schema(
+                List.of(
                         prop("resource_id", "integer", "ID del recurso"),
                         prop("date", "string", "Fecha en formato YYYY-MM-DD")),
                 List.of("resource_id", "date")));
 
-        tools.add(tool("create_reservation",
+        declarations.add(declaration("create_reservation",
                 "Crea una reserva a nombre del usuario actual. SOLO llámala después de que el usuario haya confirmado "
                         + "explícitamente recurso, fecha, hora de inicio y hora de fin.",
-                schema(
+                List.of(
                         prop("resource_id", "integer", "ID del recurso"),
                         prop("start", "string", "Inicio en hora local, formato YYYY-MM-DDTHH:MM (ej. 2026-11-20T14:00)"),
                         prop("end", "string", "Fin en hora local, formato YYYY-MM-DDTHH:MM"),
@@ -87,16 +87,19 @@ public class AgentToolbox {
                         prop("notes", "string", "Nota opcional para el administrador")),
                 List.of("resource_id", "start", "end")));
 
-        tools.add(tool("list_my_reservations",
+        declarations.add(declaration("list_my_reservations",
                 "Lista las reservas activas y próximas (pendientes o confirmadas) del usuario actual.",
-                schema(),
+                List.of(),
                 List.of()));
 
-        tools.add(tool("cancel_reservation",
+        declarations.add(declaration("cancel_reservation",
                 "Cancela una reserva del usuario actual. SOLO llámala después de que el usuario confirme cuál cancelar.",
-                schema(prop("reservation_id", "integer", "ID de la reserva (sale de list_my_reservations)")),
+                List.of(prop("reservation_id", "integer", "ID de la reserva (sale de list_my_reservations)")),
                 List.of("reservation_id")));
 
+        // Gemini espera: tools = [ { functionDeclarations: [ ... ] } ]
+        ArrayNode tools = mapper().createArrayNode();
+        tools.addObject().set("functionDeclarations", declarations);
         return tools;
     }
 
@@ -275,36 +278,34 @@ public class AgentToolbox {
         return node == null || !node.canConvertToInt() ? null : node.asInt();
     }
 
-    private ObjectNode tool(String name, String description, ObjectNode inputSchema, List<String> required) {
-        ObjectNode tool = mapper().createObjectNode();
-        tool.put("name", name);
-        tool.put("description", description);
-        ArrayNode requiredArray = inputSchema.putArray("required");
-        required.forEach(requiredArray::add);
-        tool.set("input_schema", inputSchema);
-        return tool;
-    }
+    /** Una declaración de función en formato Gemini. Sin parámetros se omite "parameters" (Gemini no admite objeto vacío). */
+    private ObjectNode declaration(String name, String description, List<ObjectNode> properties, List<String> required) {
+        ObjectNode declaration = mapper().createObjectNode();
+        declaration.put("name", name);
+        declaration.put("description", description);
 
-    private ObjectNode schema(ObjectNode... properties) {
-        ObjectNode schema = mapper().createObjectNode();
-        schema.put("type", "object");
-        ObjectNode props = schema.putObject("properties");
-        for (ObjectNode property : properties) {
-            props.set(property.get("__name").asText(), strip(property));
+        if (!properties.isEmpty()) {
+            ObjectNode parameters = declaration.putObject("parameters");
+            parameters.put("type", "object");
+            ObjectNode props = parameters.putObject("properties");
+            for (ObjectNode property : properties) {
+                ObjectNode definition = props.putObject(property.get("name").asText());
+                definition.put("type", property.get("type").asText());
+                definition.put("description", property.get("description").asText());
+            }
+            if (!required.isEmpty()) {
+                ArrayNode requiredArray = parameters.putArray("required");
+                required.forEach(requiredArray::add);
+            }
         }
-        return schema;
+        return declaration;
     }
 
     private ObjectNode prop(String name, String type, String description) {
         ObjectNode node = mapper().createObjectNode();
-        node.put("__name", name);
+        node.put("name", name);
         node.put("type", type);
         node.put("description", description);
         return node;
-    }
-
-    private static ObjectNode strip(ObjectNode property) {
-        property.remove("__name");
-        return property;
     }
 }
