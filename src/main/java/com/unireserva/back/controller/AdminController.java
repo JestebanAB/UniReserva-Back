@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import com.unireserva.back.dto.ReservationResponse;
 import com.unireserva.back.dto.ResourceResponse;
@@ -53,6 +55,13 @@ public class AdminController {
             @PathVariable("id") Long id,
             @Valid @RequestBody ResourceUpsertRequest request) {
         return adminService.updateResource(id, request);
+    }
+
+    @PostMapping(value = "/resources/{id}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResourceResponse uploadResourceImage(
+            @PathVariable("id") Long id,
+            @RequestParam("image") MultipartFile image) {
+        return adminService.uploadResourceImage(id, image);
     }
 
     @GetMapping("/reservations")

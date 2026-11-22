@@ -20,10 +20,12 @@ import com.unireserva.back.dto.ResourceResponse;
 import com.unireserva.back.model.Reservation;
 import com.unireserva.back.model.ReservationStatus;
 import com.unireserva.back.model.Resource;
+import com.unireserva.back.model.ResourceImage;
 import com.unireserva.back.model.ResourceState;
 import com.unireserva.back.model.ResourceType;
 import com.unireserva.back.repository.ReservationRepository;
 import com.unireserva.back.repository.ResourceCategoryRepository;
+import com.unireserva.back.repository.ResourceImageRepository;
 import com.unireserva.back.repository.ResourceRepository;
 
 @Service
@@ -32,16 +34,19 @@ public class ResourceService {
     private final ResourceRepository resourceRepository;
     private final ResourceCategoryRepository categoryRepository;
     private final ReservationRepository reservationRepository;
+    private final ResourceImageRepository resourceImageRepository;
     private final Clock clock;
 
     public ResourceService(
             ResourceRepository resourceRepository,
             ResourceCategoryRepository categoryRepository,
             ReservationRepository reservationRepository,
+            ResourceImageRepository resourceImageRepository,
             Clock clock) {
         this.resourceRepository = resourceRepository;
         this.categoryRepository = categoryRepository;
         this.reservationRepository = reservationRepository;
+        this.resourceImageRepository = resourceImageRepository;
         this.clock = clock;
     }
 
@@ -67,6 +72,11 @@ public class ResourceService {
 
     public ResourceResponse getById(Long id) {
         return ResourceResponse.from(findOrThrow(id));
+    }
+
+    public ResourceImage getImage(Long resourceId) {
+        return resourceImageRepository.findById(resourceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "El recurso no tiene imagen"));
     }
 
     /**
