@@ -99,6 +99,7 @@ public class ReservationService {
     public ReservationResponse cancel(String email, Long reservationId, boolean isAdmin) {
         Reservation reservation = reservationRepository.findDetailedById(reservationId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "La reserva no existe"));
+        LocalDateTime now = LocalDateTime.now(clock);
 
         if (!isAdmin && !reservation.getUser().getEmail().equalsIgnoreCase(email)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Solo puedes cancelar tus propias reservas");
@@ -107,7 +108,7 @@ public class ReservationService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Esta reserva ya no se puede cancelar (estado: " + reservation.getStatus() + ")");
         }
-        if (!reservation.getStartTime().isAfter(LocalDateTime.now(clock))) {
+        if (!reservation.getStartTime().isAfter(now)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "No se puede cancelar una reserva que ya comenzó");
         }
@@ -120,6 +121,7 @@ public class ReservationService {
     void validateRules(Resource resource, ReservationRequest request) {
         LocalDateTime start = request.startTime();
         LocalDateTime end = request.endTime();
+        LocalDateTime now = LocalDateTime.now(clock);
 
         if (resource.getState() != ResourceState.AVAILABLE) {
             throw bad(HttpStatus.CONFLICT, "Este recurso no está disponible para reservas en este momento");
@@ -127,7 +129,7 @@ public class ReservationService {
         if (!end.isAfter(start)) {
             throw bad(HttpStatus.BAD_REQUEST, "La hora de fin debe ser posterior a la de inicio");
         }
-        if (start.isBefore(LocalDateTime.now(clock))) {
+        if (start.isBefore(now)) {
             throw bad(HttpStatus.BAD_REQUEST, "No puedes reservar en el pasado");
         }
         if (!start.toLocalDate().equals(end.toLocalDate())) {
@@ -149,14 +151,21 @@ public class ReservationService {
         }
         if (resource.getResourceType() == ResourceType.EQUIPMENT) {
             int quantity = request.quantity() == null ? 1 : request.quantity();
+            if (quantity < 1) {
+                throw bad(HttpStatus.BAD_REQUEST, "La cantidad debe ser al menos 1");
+            }
             if (quantity > resource.getQuantity()) {
                 throw bad(HttpStatus.BAD_REQUEST, "Solo existen " + resource.getQuantity() + " unidades de este recurso");
             }
         }
-        if (resource.getResourceType() == ResourceType.SPACE
-                && resource.getCapacity() != null && request.attendees() != null
-                && request.attendees() > resource.getCapacity()) {
-            throw bad(HttpStatus.BAD_REQUEST, "La capacidad máxima de este espacio es de " + resource.getCapacity() + " personas");
+        if (resource.getResourceType() == ResourceType.SPACE) {
+            if (request.attendees() != null && request.attendees() < 1) {
+                throw bad(HttpStatus.BAD_REQUEST, "El número de asistentes debe ser al menos 1");
+            }
+            if (resource.getCapacity() != null && request.attendees() != null
+                    && request.attendees() > resource.getCapacity()) {
+                throw bad(HttpStatus.BAD_REQUEST, "La capacidad máxima de este espacio es de " + resource.getCapacity() + " personas");
+            }
         }
     }
 

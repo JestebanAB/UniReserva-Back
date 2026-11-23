@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeSet;
+import java.util.TreeMap;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -96,9 +97,17 @@ public class ResourceService {
         TreeSet<LocalDateTime> points = new TreeSet<>();
         points.add(open);
         points.add(close);
+        TreeMap<LocalDateTime, Integer> quantityChanges = new TreeMap<>();
         for (Reservation r : occupying) {
-            points.add(max(r.getStartTime(), open));
-            points.add(min(r.getEndTime(), close));
+            LocalDateTime reservationStart = max(r.getStartTime(), open);
+            LocalDateTime reservationEnd = min(r.getEndTime(), close);
+            if (!reservationStart.isBefore(reservationEnd)) {
+                continue;
+            }
+            points.add(reservationStart);
+            points.add(reservationEnd);
+            quantityChanges.merge(reservationStart, r.getQuantity(), Integer::sum);
+            quantityChanges.merge(reservationEnd, -r.getQuantity(), Integer::sum);
         }
 
         LocalDateTime earliest = open;
@@ -109,17 +118,13 @@ public class ResourceService {
         List<LocalDateTime> pts = new ArrayList<>(points);
         List<FreeWindow> free = new ArrayList<>();
         if (resource.getState() == ResourceState.AVAILABLE) {
+            int used = 0;
             for (int i = 0; i < pts.size() - 1; i++) {
                 LocalDateTime start = max(pts.get(i), earliest);
                 LocalDateTime end = pts.get(i + 1);
+                used += quantityChanges.getOrDefault(pts.get(i), 0);
                 if (!start.isBefore(end)) {
                     continue;
-                }
-                int used = 0;
-                for (Reservation r : occupying) {
-                    if (r.getStartTime().isBefore(end) && r.getEndTime().isAfter(pts.get(i))) {
-                        used += r.getQuantity();
-                    }
                 }
                 int available = total - used;
                 if (available <= 0) {

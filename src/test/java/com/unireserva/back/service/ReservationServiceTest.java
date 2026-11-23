@@ -172,6 +172,22 @@ class ReservationServiceTest {
     }
 
     @Test
+    void rejectsInvalidQuantityForEquipment() {
+        noOverlap();
+        tennisCourt.setResourceType(ResourceType.EQUIPMENT);
+        tennisCourt.setQuantity(3);
+        ReservationRequest invalidQuantity = new ReservationRequest(10L,
+                LocalDateTime.of(2026, 11, 21, 14, 0),
+                LocalDateTime.of(2026, 11, 21, 15, 0),
+                0, null, null);
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.create("ana@udea.edu.co", invalidQuantity, ReservationChannel.WEB));
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+    }
+
+    @Test
     void quarterHourRoundingIsCorrect() {
         assertEquals(LocalDateTime.of(2026, 11, 20, 10, 15),
                 ResourceService.ceilToQuarterHour(LocalDateTime.of(2026, 11, 20, 10, 1)));

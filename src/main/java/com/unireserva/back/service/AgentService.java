@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.unireserva.back.dto.AgentChatRequest;
@@ -146,7 +147,7 @@ public class AgentService {
         }
         try {
             wrapper.set("result", geminiClient.mapper().readTree(result.content()));
-        } catch (Exception exception) {
+        } catch (JsonProcessingException exception) {
             wrapper.put("result", result.content());
         }
         return wrapper;
